@@ -1,33 +1,43 @@
-use clap::{arg, value_parser, Args};
+use clap::Parser;
 use image::{ImageReader, ImageResult, Rgb, RgbImage};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::{
     cmp::{max, min},
-    path::{Path, PathBuf},
+    path::PathBuf,
 };
 
-// Command information
-pub const NAME : &str = "basic";
-pub fn command() -> clap::Command {
-    clap::Command::new(NAME)
-    .about("Basic kuwahara filter, as described on Wikipedia")
-    .arg(
-        arg!(-i --input "The input image file")
-            .value_parser(value_parser!(PathBuf)),
-    )
-    .arg(arg!(-k --kernel_size "The side length of each quadrant"))
+#[derive(Parser)]
+pub struct Args {
+    #[arg(short, long)]
+    input: PathBuf,
+
+    #[arg(short, long, default_value_t = 5)]
+    kernel_size: u32,
+}
+impl Args {
+    fn get_output(&self) -> PathBuf {
+        let basename = self.input.parent().unwrap().to_str().unwrap();
+        let basename = PathBuf::from(basename);
+
+        let filename = format!(
+            "{}_kuwahara_k{}.png",
+            self.input.file_stem().unwrap().to_str().unwrap(),
+            self.kernel_size
+        );
+        let filename = PathBuf::from(filename);
+
+        let filepath = basename.join(filename);
+        filepath
+    }
 }
 
 // The Kuwahara filter computes the mean and variance of the
 // 4 quadrants surrounding pixel (x,y) and sets that pixel
 // to the mean value of the quadrant that has the smallest
 // variance.
-pub fn run(args: &dyn Args) -> ImageResult<RgbImage> {
-    let input = args.get_one::<PathBuf>("input").
-
+pub fn run(args: &Args) -> ImageResult<()> {
     // load images
-    let filepath = filepath.to_str().unwrap();
-    let img = ImageReader::open(filepath)?.decode()?.to_rgb8();
+    let img = ImageReader::open(&args.input)?.decode()?.to_rgb8();
     let (width, height) = img.dimensions();
 
     // create a progress bar
@@ -42,22 +52,31 @@ pub fn run(args: &dyn Args) -> ImageResult<RgbImage> {
 
     // process pixels
     let mut result = RgbImage::new(width, height);
-    const WINDOW_SIZE: u32 = 5;
     for y in 0..height {
         for x in 0..width {
             let x_i32 = x as i32;
             let y_i32 = y as i32;
-            let a_i32 = WINDOW_SIZE as i32;
+            let a_i32 = args.kernel_size as i32;
             let quadrants = vec![
                 compute_quadrant(
                     &img,
                     x_i32 - a_i32 + 1,
                     y_i32 - a_i32 + 1,
-                    WINDOW_SIZE,
+                    args.kernel_size,
                 ),
-                compute_quadrant(&img, x_i32, y_i32 - a_i32 + 1, WINDOW_SIZE),
-                compute_quadrant(&img, x_i32 - a_i32 + 1, y_i32, WINDOW_SIZE),
-                compute_quadrant(&img, x_i32, y_i32, WINDOW_SIZE),
+                compute_quadrant(
+                    &img,
+                    x_i32,
+                    y_i32 - a_i32 + 1,
+                    args.kernel_size,
+                ),
+                compute_quadrant(
+                    &img,
+                    x_i32 - a_i32 + 1,
+                    y_i32,
+                    args.kernel_size,
+                ),
+                compute_quadrant(&img, x_i32, y_i32, args.kernel_size),
             ];
 
             let min_quadrant = quadrants
@@ -71,20 +90,30 @@ pub fn run(args: &dyn Args) -> ImageResult<RgbImage> {
         }
     }
 
-    if let Err(e) = result.save(cli.get_output()) {
-        eprintln!("Error saving image: {e}");
-        std::process::exit(1)
-    }
+    let output = args.get_output();
+    result.save(output)?;
 
     pb.finish_with_message("Done!");
 
-    return Ok(result);
-};
+    return Ok(());
+}
 
-fn rgb_to_brightness(rgb: Rgb<u8>) -> u8 {
-    let Rgb(rgb) = rgb;
-    // array is guaranteed to be non-empty
-    rgb.iter().copied().max().unwrap()
+#[derive(Debug)]
+struct QuadrantResult {
+    mean_color: Rgb<u8>,
+    var: f32,
+}
+
+fn compute_quadrant(
+    img: &RgbImage,
+    x: i32,
+    y: i32,
+    side_length: u32,
+) -> QuadrantResult {
+    let mean = compute_window_mean_brightness(img, x, y, side_length);
+    let var = compute_window_var(img, x, y, side_length, mean);
+    let mean_color = compute_window_mean_color(img, x, y, side_length);
+    return QuadrantResult { mean_color, var };
 }
 
 fn clamp_window_coordinates(
@@ -190,40 +219,8 @@ fn compute_window_var(
     };
 }
 
-#[derive(Debug)]
-struct QuadrantResult {
-    mean_color: Rgb<u8>,
-    var: f32,
+fn rgb_to_brightness(rgb: Rgb<u8>) -> u8 {
+    let Rgb(rgb) = rgb;
+    let brightness = rgb.iter().copied().max().unwrap();
+    brightness
 }
-
-fn compute_quadrant(
-    img: &RgbImage,
-    x: i32,
-    y: i32,
-    side_length: u32,
-) -> QuadrantResult {
-    let mean = compute_window_mean_brightness(img, x, y, side_length);
-    let var = compute_window_var(img, x, y, side_length, mean);
-    let mean_color = compute_window_mean_color(img, x, y, side_length);
-    return QuadrantResult { mean_color, var };
-}
-
-fn generate_output_filepath(input: &Path, output: Option<PathBuf>) -> PathBuf {
-    match &self.output {
-        Some(filepath) => filepath.clone(),
-        None => {
-            let basename = self.input.parent().unwrap().to_str().unwrap();
-            let basename = PathBuf::from(basename);
-
-            let filename = format!(
-                "{}_kuwahara.png",
-                self.input.file_stem().unwrap().to_str().unwrap()
-            );
-            let filename = PathBuf::from(filename);
-
-            let filepath = basename.join(filename);
-            filepath
-        }
-    }
-}
-
