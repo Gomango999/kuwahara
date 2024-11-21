@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use clap::Parser;
 use image::{ImageReader, ImageResult, Rgb, RgbImage};
 use indicatif::{ProgressBar, ProgressStyle};
@@ -7,6 +9,13 @@ use std::{
 };
 
 #[derive(Parser)]
+#[command(about = "The basic Kuwahara filter")]
+#[command(
+    long_about = "The Kuwahara filter computes the mean and variance of the
+4 quadrants surrounding pixel (x,y) and sets that pixel
+to the mean value of the quadrant that has the smallest
+variance."
+)]
 pub struct Args {
     #[arg(short, long)]
     input: PathBuf,
@@ -15,12 +24,13 @@ pub struct Args {
     kernel_size: u32,
 }
 impl Args {
+    /// Generates a default output filename based on the input filename
     fn get_output(&self) -> PathBuf {
         let basename = self.input.parent().unwrap().to_str().unwrap();
         let basename = PathBuf::from(basename);
 
         let filename = format!(
-            "{}_kuwahara_k{}.png",
+            "{}_b_k{}.png",
             self.input.file_stem().unwrap().to_str().unwrap(),
             self.kernel_size
         );
@@ -31,18 +41,18 @@ impl Args {
     }
 }
 
-// The Kuwahara filter computes the mean and variance of the
-// 4 quadrants surrounding pixel (x,y) and sets that pixel
-// to the mean value of the quadrant that has the smallest
-// variance.
 pub fn run(args: &Args) -> ImageResult<()> {
-    // load images
+    // Load images
     let img = ImageReader::open(&args.input)?.decode()?.to_rgb8();
     let (width, height) = img.dimensions();
 
-    // create a progress bar
+    let num_quadrant_cols = (width + (args.kernel_size - 1) * 2) as usize;
+    let num_quadrant_rows = (height + (args.kernel_size - 1) * 2) as usize;
+    let num_quadrants = (num_quadrant_rows * num_quadrant_cols) as u64;
     let num_pixels = (width * height) as u64;
-    let pb = ProgressBar::new(num_pixels);
+
+    // Create a progress bar
+    let pb = ProgressBar::new(num_quadrants + num_pixels);
     pb.set_style(
         ProgressStyle::default_bar()
             .template("[{elapsed_precise}] [{bar:40}] {percent}%")
@@ -50,42 +60,47 @@ pub fn run(args: &Args) -> ImageResult<()> {
             .progress_chars("=>-"),
     );
 
-    // process pixels
+    // `quadrant_cache[y][x]` represents the statistics of the (kernel_size * kernel_size)
+    // window with top left corner (x,y). The window may fall off the image,
+    // in which case only the intersecting pixels are used for calculation.
+    let mut quadrant_cache =
+        vec![
+            vec![QuadrantResult::default(); num_quadrant_cols];
+            num_quadrant_rows
+        ];
+    // TODO: Replace this with iterators
+    for y in -(args.kernel_size as i32)..(height as i32) {
+        for x in -(args.kernel_size as i32)..(width as i32) {
+            let vec_y: usize = (y + (args.kernel_size as i32)) as usize;
+            let vec_x: usize = (x + (args.kernel_size as i32)) as usize;
+            quadrant_cache[vec_y][vec_x] =
+                QuadrantResult::new(&img, (x, y), args.kernel_size);
+
+            pb.inc(1);
+        }
+    }
+
+    // For each pixel, compute the quadrant with the least variance in brightness
+    // and use it's mean color.
     let mut result = RgbImage::new(width, height);
-    for y in 0..height {
-        for x in 0..width {
-            let x_i32 = x as i32;
-            let y_i32 = y as i32;
-            let a_i32 = args.kernel_size as i32;
+    for y in 0..height as usize {
+        for x in 0..width as usize {
+            let a = args.kernel_size as usize;
             let quadrants = vec![
-                compute_quadrant(
-                    &img,
-                    x_i32 - a_i32 + 1,
-                    y_i32 - a_i32 + 1,
-                    args.kernel_size,
-                ),
-                compute_quadrant(
-                    &img,
-                    x_i32,
-                    y_i32 - a_i32 + 1,
-                    args.kernel_size,
-                ),
-                compute_quadrant(
-                    &img,
-                    x_i32 - a_i32 + 1,
-                    y_i32,
-                    args.kernel_size,
-                ),
-                compute_quadrant(&img, x_i32, y_i32, args.kernel_size),
+                &quadrant_cache[y][x],
+                &quadrant_cache[y + a - 1][x],
+                &quadrant_cache[y][x + a - 1],
+                &quadrant_cache[y + a - 1][x + a - 1],
             ];
 
             let min_quadrant = quadrants
                 .iter()
-                .min_by(|q1, q2| q1.var.partial_cmp(&q2.var).unwrap())
+                .min_by(|q1, q2| {
+                    q1.brightness_var.partial_cmp(&q2.brightness_var).unwrap()
+                })
                 .unwrap();
 
-            result.put_pixel(x, y, min_quadrant.mean_color);
-
+            result.put_pixel(x as u32, y as u32, min_quadrant.mean_color);
             pb.inc(1);
         }
     }
@@ -98,128 +113,135 @@ pub fn run(args: &Args) -> ImageResult<()> {
     return Ok(());
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Default)]
+struct Window {
+    x_start: u32,
+    y_start: u32,
+    x_end: u32,
+    y_end: u32,
+}
+impl Window {
+    fn new(
+        (x, y): (i32, i32),
+        (width, height): (u32, u32),
+        kernel_size: u32,
+    ) -> Self {
+        let x_start = max(0, x) as u32;
+        let y_start = max(0, y) as u32;
+        let x_end = min(x_start + kernel_size, width);
+        let y_end = min(y_start + kernel_size, height);
+        return Window {
+            x_start,
+            y_start,
+            x_end,
+            y_end,
+        };
+    }
+
+    fn num_pixels(&self) -> u32 {
+        (self.y_end - self.y_start) * (self.x_end - self.x_start)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 struct QuadrantResult {
+    mean_brightness: f32,
+    brightness_var: f32,
     mean_color: Rgb<u8>,
-    var: f32,
 }
+impl QuadrantResult {
+    /// Computes stats for a quadrant with top left corner (x,y)
+    fn new(img: &RgbImage, (x, y): (i32, i32), kernel_size: u32) -> Self {
+        let window = Window::new((x, y), img.dimensions(), kernel_size);
 
-fn compute_quadrant(
-    img: &RgbImage,
-    x: i32,
-    y: i32,
-    side_length: u32,
-) -> QuadrantResult {
-    let mean = compute_window_mean_brightness(img, x, y, side_length);
-    let var = compute_window_var(img, x, y, side_length, mean);
-    let mean_color = compute_window_mean_color(img, x, y, side_length);
-    return QuadrantResult { mean_color, var };
+        let QuadrantMeans {
+            brightness: mean_brightness,
+            color: mean_color,
+        } = QuadrantMeans::new(img, &window);
+        let brightness_var = compute_variance(img, &window, mean_brightness);
+
+        return QuadrantResult {
+            mean_brightness,
+            brightness_var,
+            mean_color,
+        };
+    }
 }
-
-fn clamp_window_coordinates(
-    x_start: i32,
-    y_start: i32,
-    side_length: u32,
-    width: u32,
-    height: u32,
-) -> ((u32, u32), (u32, u32)) {
-    let x_start = max(0, x_start) as u32;
-    let y_start = max(0, y_start) as u32;
-    let x_end = min(x_start + side_length, width);
-    let y_end = min(y_start + side_length, height);
-    return ((x_start, x_end), (y_start, y_end));
-}
-
-// Computes the mean pixel color in the a*a window with top left corner (x_start, y_start)
-// This function lets you query squares that are partially outside
-fn compute_window_mean_color(
-    img: &RgbImage,
-    left: i32,
-    top: i32,
-    side_length: u32,
-) -> Rgb<u8> {
-    let (width, height) = img.dimensions();
-    let ((x_start, x_end), (y_start, y_end)) =
-        clamp_window_coordinates(left, top, side_length, width, height);
-
-    let mut total = Rgb::<u32>([0, 0, 0]);
-    let mut count = 0;
-    for y in y_start..y_end {
-        for x in x_start..x_end {
-            if let Some(Rgb([r, g, b])) = img.get_pixel_checked(x, y) {
-                total = Rgb::<u32>([
-                    total.0[0] + (*r as u32),
-                    total.0[1] + (*g as u32),
-                    total.0[2] + (*b as u32),
-                ]);
-                count += 1;
-            }
+impl Default for QuadrantResult {
+    fn default() -> Self {
+        QuadrantResult {
+            mean_brightness: 0.0,
+            brightness_var: 0.0,
+            mean_color: Rgb([0, 0, 0]),
         }
     }
-    return Rgb::<u8>([
-        (total.0[0] as f32 / count as f32) as u8,
-        (total.0[1] as f32 / count as f32) as u8,
-        (total.0[2] as f32 / count as f32) as u8,
-    ]);
 }
 
-// Computes the mean pixel brightness in the a*a window with top left corner (x_start, y_start)
-// This function lets you query squares that are partially outside
-fn compute_window_mean_brightness(
-    img: &RgbImage,
-    left: i32,
-    top: i32,
-    side_length: u32,
-) -> u8 {
-    let (width, height) = img.dimensions();
-    let ((x_start, x_end), (y_start, y_end)) =
-        clamp_window_coordinates(left, top, side_length, width, height);
-
-    let mut total: u32 = 0;
-    let mut count = 0;
-    for y in y_start..y_end {
-        for x in x_start..x_end {
-            if let Some(rgb) = img.get_pixel_checked(x, y) {
-                total += rgb_to_brightness(*rgb) as u32;
-                count += 1;
+#[derive(Debug, Clone)]
+struct QuadrantMeans {
+    brightness: f32,
+    color: Rgb<u8>,
+}
+impl QuadrantMeans {
+    // TODO: Replace with iterators?
+    fn new(img: &RgbImage, window: &Window) -> Self {
+        let mut color_sum = [0, 0, 0];
+        let mut brightness_sum = 0;
+        for y in window.y_start..window.y_end {
+            for x in window.x_start..window.x_end {
+                if let Some(rgb) = img.get_pixel_checked(x, y) {
+                    brightness_sum += rgb_to_brightness(rgb) as u32;
+                    let Rgb([r, g, b]) = rgb;
+                    color_sum = [
+                        color_sum[0] + (*r as u32),
+                        color_sum[1] + (*g as u32),
+                        color_sum[2] + (*b as u32),
+                    ];
+                }
             }
         }
+        let num_pixels = window.num_pixels();
+        let mean_color = Rgb::<u8>([
+            (color_sum[0] as f32 / num_pixels as f32) as u8,
+            (color_sum[1] as f32 / num_pixels as f32) as u8,
+            (color_sum[2] as f32 / num_pixels as f32) as u8,
+        ]);
+        let mean_brightness = brightness_sum as f32 / num_pixels as f32;
+
+        QuadrantMeans {
+            color: mean_color,
+            brightness: mean_brightness,
+        }
     }
-    return (total / count as u32) as u8;
 }
 
-// Computes the pixel brightness variance in the a*a window with top left corner (x_start, y_start)
-// This function lets you query squares that are partially outside
-fn compute_window_var(
+/// computes the variance in brightness for a window in an image
+fn compute_variance(
     img: &RgbImage,
-    left: i32,
-    top: i32,
-    side_length: u32,
-    mean: u8,
+    window: &Window,
+    mean_brightness: f32,
 ) -> f32 {
-    let mean = mean as i32;
-    let (width, height) = img.dimensions();
-    let ((x_start, x_end), (y_start, y_end)) =
-        clamp_window_coordinates(left, top, side_length, width, height);
-    let mut total = 0;
-    let mut count: u32 = 0;
-    for y in y_start..y_end {
-        for x in x_start..x_end {
+    // TODO: Replace with iterators?
+    let mut squared_diff_sum = 0.0;
+    for y in window.y_start..window.y_end {
+        for x in window.x_start..window.x_end {
             if let Some(rgb) = img.get_pixel_checked(x, y) {
-                let diff = (rgb_to_brightness(*rgb) as i32) - mean;
-                total += diff * diff;
-                count += 1;
+                let diff = (rgb_to_brightness(rgb) as f32) - mean_brightness;
+                squared_diff_sum += diff * diff;
             }
         }
     }
-    return if count == 1 {
+
+    let num_pixels = window.num_pixels();
+    let brightness_var = if num_pixels == 1 {
         0.
     } else {
-        total as f32 / (count - 1) as f32
+        squared_diff_sum / (num_pixels - 1) as f32
     };
+    brightness_var
 }
 
-fn rgb_to_brightness(rgb: Rgb<u8>) -> u8 {
+fn rgb_to_brightness(rgb: &Rgb<u8>) -> u8 {
     let Rgb(rgb) = rgb;
     let brightness = rgb.iter().copied().max().unwrap();
     brightness
