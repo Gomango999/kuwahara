@@ -1,8 +1,8 @@
 use clap::{Parser, Subcommand};
 use std::time::Instant;
 
+mod anisotropic;
 mod basic;
-mod basic_slow;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -13,8 +13,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    BasicSlow(basic_slow::Args),
     Basic(basic::Args),
+    Anisotropic(anisotropic::Args),
 }
 
 fn main() {
@@ -22,8 +22,8 @@ fn main() {
 
     let cli = Cli::parse();
     let result = match &cli.command {
-        Commands::BasicSlow(args) => basic_slow::run(args),
         Commands::Basic(args) => basic::run(args),
+        Commands::Anisotropic(args) => anisotropic::run(args),
     };
     if let Err(e) = result {
         eprintln!("Error generating image: {e}");
