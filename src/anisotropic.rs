@@ -5,7 +5,9 @@ use convolve2d::*;
 use image::{ImageReader, ImageResult};
 // use indicatif::{ProgressBar, ProgressStyle};
 use std::f64::consts::PI;
+use std::ops::{Add, Mul};
 use std::path::PathBuf;
+use vecmath::Vector2;
 
 type RGBImage = DynamicMatrix<SubPixels<f64, 3>>;
 
@@ -16,6 +18,8 @@ mod consts {
     pub static PARTIAL_DERIVATIVE_STD: f64 = 1.0;
     // Gaussian spatial derivatives kernel size
     pub static PARTIAL_DERIVATIVE_KERNEL_SIZE: usize = 5;
+    // Standard deviation for smoothing structure tensors
+    pub static TENSOR_SMOOTHING_STD: f64 = 2.0;
     // Standard deviation of filter sector smoothing
     pub static FILTER_SMOOTHING_STD: f64 = 1.0;
     // Standard deviation for filter decay
@@ -106,6 +110,7 @@ fn create_kernel_map(
 /// Represents the structure tensor with values:
 /// |e f|
 /// |f g|
+#[derive(Copy, Clone, Default)]
 struct StructureTensor {
     e: f64,
     f: f64,
@@ -118,6 +123,30 @@ impl StructureTensor {
             e: x_grad * x_grad,
             f: x_grad * y_grad,
             g: y_grad * y_grad,
+        }
+    }
+}
+
+impl Add for StructureTensor {
+    type Output = Self;
+
+    fn add(self, other: Self) -> Self {
+        Self {
+            e: self.e + other.e,
+            f: self.f + other.f,
+            g: self.g + other.g,
+        }
+    }
+}
+
+impl Mul<f64> for StructureTensor {
+    type Output = Self;
+
+    fn mul(self, rhs: f64) -> Self {
+        StructureTensor {
+            e: self.e * rhs,
+            f: self.f * rhs,
+            g: self.g * rhs,
         }
     }
 }
@@ -154,13 +183,27 @@ fn compute_structure_tensors(
     DynamicMatrix::new(width, height, structure_tensors_data).unwrap()
 }
 
+fn smooth_structure_tensors(
+    structure_tensors: &DynamicMatrix<StructureTensor>,
+) -> DynamicMatrix<StructureTensor> {
+    let smoothing_kernel = kernel::gaussian(13, consts::TENSOR_SMOOTHING_STD);
+    convolve2d(structure_tensors, &smoothing_kernel)
+}
+
+struct PixelStats {
+    structure_tensor: StructureTensor,
+    eigenvalues: (i32, i32),
+    eigenvector: Vector2<f64>,
+    angle: f64,
+    anistropy: f64,
+}
+
 pub fn run(args: &Args) -> ImageResult<()> {
     let img = load_image(&args.input)?;
 
-    let _structure_tensors =
+    let structure_tensors =
         compute_structure_tensors(&img, consts::PARTIAL_DERIVATIVE_KERNEL_SIZE);
-
-    // smooth structure tensors
+    let structure_tensors = smooth_structure_tensors(&structure_tensors);
 
     // determine eigenvectors and values of each one
 

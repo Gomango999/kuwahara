@@ -8,3 +8,4 @@ image = "0.25.5"
 clap = {version = "4.0", features = ["derive"]}
 indicatif = "0.17.8"
 convolve2d = {version = "0.2.0", features = ["image"]}
+vecmath = "1.0.0"
