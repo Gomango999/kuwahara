@@ -2,24 +2,28 @@
 
 use clap::Parser;
 use image::{GrayImage, ImageReader, ImageResult, RgbImage};
-use ndarray::{array, stack, Array2, Array3, Axis, Zip};
+use indicatif::ProgressStyle;
+use ndarray::{array, stack, Array1, Array2, Array3, Axis, Zip};
 use ndarray_conv::{ConvExt, ConvMode, PaddingMode};
 use std::f64::consts::PI;
 use std::path::PathBuf;
+use std::time::Instant;
 
 mod consts {
     // Number of sectors in the filter
-    pub static NUM_SECTORS: i32 = 8;
+    pub static NUM_SECTORS: usize = 8;
     // Standard deviation for Gaussian partial derivatives
     pub static PARTIAL_DERIVATIVE_STD: f64 = 1.0;
     // Gaussian spatial derivatives kernel size
     pub static PARTIAL_DERIVATIVE_KERNEL_SIZE: usize = 5;
     // Standard deviation for smoothing structure tensors
-    pub static TENSOR_SMOOTHING_STD: f64 = 2.0;
+    pub static TENSOR_SMOOTHING_STD: f64 = 1.0;
     // Standard deviation of filter sector smoothing
     pub static FILTER_SMOOTHING_STD: f64 = 1.0;
     // Standard deviation for filter decay
     pub static FILTER_DECAY_STD: f64 = 3.0;
+    // TODO: Something
+    pub static SHARPNESS_COEFFICIENT: u64 = 8;
 }
 
 #[derive(Parser)]
@@ -104,7 +108,12 @@ fn gaussian_derivative_y(x: f64, y: f64, std: f64) -> f64 {
 /// is (0,0) at the centre of the kernel.
 /// Panics if the kernel length is not odd
 fn array2_from_fn(kernel_size: usize, f: impl Fn(f64, f64) -> f64) -> Array2<f64> {
-    assert!(kernel_size % 2 == 1, "Kernel length must be odd");
+    assert_eq!(
+        kernel_size % 2,
+        1,
+        "Kernel length {} must be odd",
+        kernel_size
+    );
 
     let half_kernel_size = (kernel_size / 2) as i32;
     Array2::from_shape_fn((kernel_size, kernel_size), |(y, x)| {
@@ -116,7 +125,8 @@ fn array2_from_fn(kernel_size: usize, f: impl Fn(f64, f64) -> f64) -> Array2<f64
 
 fn gaussian_kernel(size: usize, std: f64) -> Array2<f64> {
     let f = |x, y| gaussian(x, y, std);
-    array2_from_fn(size, f)
+    let kernel = array2_from_fn(size, f);
+    kernel
 }
 
 /// Represents the structure tensor with values:
@@ -285,61 +295,194 @@ fn calc_anisotropy(tensor: &StructureTensor) -> Anisotropy {
     }
 }
 
-// /// Weighting function for the disc.
-// fn disc_space_weighting(i: usize) -> Array2<f64> {
-//     // Calculate the charateristic function
-//     const SIZE: usize = 27;
-//     let mut charateristic = Array2::<f64>::zeros((SIZE, SIZE));
+/// The i-th weighting function for the disc, returned as a 2D array centered at
+/// (0,0). This is the weight function that should be applied to pixels after
+/// the transformation and rotation have been applied. The different values of
+/// `i`` reprsent which segment of the disc we are considering.
+fn disc_space_weighting(i: usize) -> Array2<f64> {
+    // Calculate the charateristic function
+    const SIZE: usize = 27;
+    let characteristic = array2_from_fn(SIZE, |x, y| {
+        let half_size = (SIZE / 2) as f64;
+        let inside_circle = x.powi(2) + y.powi(2) <= (half_size).powi(2);
 
-//     let half_size: isize = (SIZE as f64 / 2.0).floor() as isize;
-//     for x in 0..SIZE {
-//         for y in 0..SIZE {
-//             let dx = (x as isize - half_size) as f64;
-//             let dy = (y as isize - half_size) as f64;
+        let angle = y.atan2(x);
+        let lower = ((2.0 * i as f64 - 1.0) * PI) / consts::NUM_SECTORS as f64;
+        let upper = ((2.0 * i as f64 + 1.0) * PI) / consts::NUM_SECTORS as f64;
 
-//             let inside_circle =
-//                 dx.powi(2) + dy.powi(2) <= (half_size as f64).powi(2);
+        let inside_segment1 = lower < angle && angle <= upper;
+        let inside_segment2 = lower < angle + 2.0 * PI && angle + 2.0 * PI <= upper;
+        let inside_segment = inside_segment1 || inside_segment2;
 
-//             let angle = dy.atan2(dx);
-//             let lower =
-//                 ((2.0 * i as f64 - 1.0) * PI) / consts::NUM_SECTORS as f64;
-//             let upper =
-//                 ((2.0 * i as f64 + 1.0) * PI) / consts::NUM_SECTORS as f64;
-//             let inside_segment = lower < angle && angle <= upper;
+        if inside_circle && inside_segment {
+            1.0
+        } else {
+            0.0
+        }
+    });
 
-//             charateristic[(x, y)] = if inside_circle && inside_segment {
-//                 1.0
-//             } else {
-//                 0.0
-//             };
-//         }
-//     }
+    // Smooth out the characteristic function
+    let smoothing_diameter = (consts::FILTER_SMOOTHING_STD).ceil() as usize * 3 * 2 + 1;
+    let smoothing_kernel = gaussian_kernel(smoothing_diameter, consts::FILTER_SMOOTHING_STD);
+    let weights = characteristic
+        .conv(&smoothing_kernel, ConvMode::Same, PaddingMode::Zeros)
+        .unwrap();
 
-//     // Smooth out the charateristic function
-//     let smoothing_diameter =
-//         (consts::FILTER_SMOOTHING_STD * 3.0 * 2.0).ceil() as usize;
-//     let smoothing_kernel =
-//         gaussian_kernel(smoothing_diameter, consts::FILTER_SMOOTHING_STD);
-//     let weights = charateristic
-//         .conv_fft(&smoothing_kernel, ConvMode::Same, PaddingMode::Zeros)
-//         .unwrap();
+    // Ensure the characteristic function decays the further from (0,0) we go
+    let decay_kernel = gaussian_kernel(SIZE, consts::FILTER_DECAY_STD);
+    let weights = weights * decay_kernel;
 
-//     // Ensure the charateristic function decays the further from (0,0) we go
-//     let decay_kernel = gaussian_kernel(SIZE, consts::FILTER_DECAY_STD);
-//     let weights = weights * decay_kernel;
+    weights
+}
 
-//     weights
-// }
+fn query_point_in_array2(point: &Array1<f64>, arr: &Array2<f64>) -> f64 {
+    let (height, width) = arr.dim();
+    let half_height = height / 2;
+    let half_width = width / 2;
 
-// /// Takes a given (x,y) offset from a pixel and returns it's weight.
-// fn weight(i: usize, x: isize, y: isize, anisotropy: &Anisotropy) -> f64 {
-//     let omega_weights = disc_space_weighting(i);
-//     let offset: Array1<f64> = array![x as f64, y as f64];
-//     let omega_offset = anisotropy.transform * anisotropy.rotation * offset;
-//     // Continue implementing this.
-//     todo!()
-// }
+    let x = point[0] as usize + half_width;
+    let y = point[1] as usize + half_height;
 
+    if !(0..height).contains(&y) || !(0..width).contains(&x) {
+        0.0
+    } else {
+        arr[[y, x]]
+    }
+}
+
+/// Takes a given (x,y) offset from a pixel and returns it's weight.
+/// TODO: Update this comment
+fn sector_weight(i: usize, x: isize, y: isize, anisotropy: &Anisotropy) -> f64 {
+    let omega_weights = disc_space_weighting(i);
+    let offset: Array1<f64> = array![x as f64, y as f64];
+    let omega_offset = anisotropy.transform.dot(&anisotropy.rotation.dot(&offset));
+    query_point_in_array2(&omega_offset, &omega_weights)
+}
+
+/// TODO: Define a type for Array3
+
+/// Mean and var are 2D arrays of size [consts::NUM_SECTORS, 3]. The ith value
+/// represents the mean/variance of the RGB values in the ith sector.
+struct PixelStatistics {
+    mean: Array2<f64>,
+    var: Array2<f64>,
+}
+
+fn calc_weighted_local_statistics(
+    x0: usize,
+    y0: usize,
+    img: &Array3<f64>, // [3, H, W]
+    anisotropy: &Anisotropy,
+) -> PixelStatistics {
+    const WINDOW_SIZE: usize = 27 * 2;
+    const HALF_WINDOW_SIZE: usize = WINDOW_SIZE / 2;
+
+    let mut mean: Array2<f64> = Array2::zeros((consts::NUM_SECTORS, 3));
+    let mut var: Array2<f64> = Array2::zeros((consts::NUM_SECTORS, 3));
+
+    let mut divisor: Array1<f64> = Array1::zeros(consts::NUM_SECTORS);
+
+    let (_, height, width) = img.dim();
+    for y in y0 as isize - HALF_WINDOW_SIZE as isize..=y0 as isize + HALF_WINDOW_SIZE as isize {
+        for x in x0 as isize - HALF_WINDOW_SIZE as isize..=x0 as isize + HALF_WINDOW_SIZE as isize {
+            // (y1, x1) is the actual position of the pixel
+            let y1 = y + y0 as isize;
+            let x1 = x + x0 as isize;
+            if !(0..height as isize).contains(&y1) || !(0..width as isize).contains(&x1) {
+                continue;
+            }
+
+            // (y1, x1) are definitely inside the image, it's safe to type-cast
+            // them to usizes
+            let y1 = y1 as usize;
+            let x1 = x1 as usize;
+
+            for i in 0..consts::NUM_SECTORS {
+                let weight = sector_weight(i, x as isize, y as isize, &anisotropy);
+                for c in 0..3 {
+                    mean[[i, c]] += weight * img[[c, y1, x1]];
+                    var[[i, c]] += weight * img[[c, y1, x1]] * img[[c, y1, x1]];
+                }
+                divisor[[i]] += weight;
+            }
+        }
+    }
+
+    // Normalise the mean and variance by the sum of weights.
+    for i in 0..consts::NUM_SECTORS {
+        for c in 0..3 {
+            mean[[i, c]] /= divisor[[i]];
+        }
+    }
+    for i in 0..consts::NUM_SECTORS {
+        for c in 0..3 {
+            var[[i, c]] /= divisor[[i]];
+            var[[i, c]] -= mean[[i, c]]
+        }
+    }
+
+    PixelStatistics { mean, var }
+}
+
+/// Calculates the final pixel value as a size 3 Array1
+fn calculate_pixel_value(
+    x: usize,
+    y: usize,
+    img: &Array3<f64>,
+    anisotropy: &Array2<Anisotropy>,
+) -> Array1<f64> {
+    let PixelStatistics { mean, var } =
+        calc_weighted_local_statistics(x, y, img, &anisotropy[[y, x]]);
+
+    let mut output: Array1<f64> = Array1::zeros(3);
+    let mut divisor: Array1<f64> = Array1::zeros(3);
+
+    let std = var.sqrt();
+    for i in 0..consts::NUM_SECTORS {
+        let norm = (std[[i, 0]].powi(2) + std[[i, 1]].powi(2) + std[[i, 2]].powi(2)).sqrt();
+        let weighting_factor = 1.0 / (1.0 + norm.powi(consts::SHARPNESS_COEFFICIENT as i32));
+
+        for c in 0..3 {
+            output[c] += weighting_factor * mean[[i, c]];
+            divisor[c] += weighting_factor;
+        }
+    }
+
+    output / divisor
+}
+
+fn generate_output(img: &Array3<f64>, anisotropy: &Array2<Anisotropy>) -> Array3<f64> {
+    let (_, height, width) = img.dim();
+
+    let mut output = Array3::zeros((3, height, width));
+
+    let start = Instant::now();
+
+    let pb = indicatif::ProgressBar::new((height * width) as u64);
+    pb.set_style(ProgressStyle::default_bar()
+        .template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {pos}/{len} ({percent}%) ETA: {eta}")
+        .unwrap()
+        .progress_chars("#>-"));
+
+    for y in 0..height {
+        for x in 0..width {
+            let rgb = calculate_pixel_value(x, y, img, anisotropy);
+            for c in 0..3 {
+                output[[c, y, x]] = rgb[c];
+            }
+            pb.inc(1);
+        }
+    }
+
+    pb.finish_with_message("done!");
+
+    let duration = start.elapsed();
+    println!("Took {:.2?} seconds", duration);
+
+    output
+}
+
+// TODO: Put debug switches into here.
 pub fn run(args: &Args) -> ImageResult<()> {
     let img = load_image(&args.input)?;
 
@@ -350,26 +493,26 @@ pub fn run(args: &Args) -> ImageResult<()> {
 
     let anisotropy = structure_tensors.map(calc_anisotropy);
 
-    // compute the kernels at different orientations and save them.
-    // Function for w_i
+    let output = generate_output(&img, &anisotropy);
 
-    // for each pixel within a certain area, for each sector, compute
-    // m_i and s_i^2
+    let output_img = ndarray_to_rgbimage(output);
 
-    // find the weighted sum of them and use that for the final output.
-    println!("Done!");
-    todo!()
+    output_img.save(&args.get_output())?;
+
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
 
+    use image::{EncodableLayout, ImageBuffer, Pixel, PixelWithColorType};
     use ndarray::{Array, Dimension};
-    use std::path::Path;
+    use std::{ops::Deref, path::Path};
 
     use super::*;
 
-    const TEST_FILE: &str = "test.png";
+    // const TEST_FILE: &str = "test2.png";
+    const TEST_FILE: &str = "field.webp";
 
     fn get_tests_root() -> String {
         let root = env!("CARGO_MANIFEST_DIR");
@@ -379,6 +522,22 @@ mod tests {
     fn get_test_file_name() -> String {
         let path = Path::new(TEST_FILE);
         path.file_stem().unwrap().to_string_lossy().into_owned()
+    }
+
+    fn save_with_suffix<P, Container>(img: ImageBuffer<P, Container>, suffix: &str)
+    where
+        P: Pixel + PixelWithColorType,
+        [P::Subpixel]: EncodableLayout,
+        Container: Deref<Target = [P::Subpixel]>,
+    {
+        let filepath = PathBuf::from(format!(
+            "{}/{}{}.png",
+            get_tests_root(),
+            get_test_file_name(),
+            suffix
+        ));
+
+        img.save(filepath).unwrap();
     }
 
     #[test]
@@ -421,19 +580,8 @@ mod tests {
         let img_x_grad = ndarray_to_rgbimage(normalise(gradients.x));
         let img_y_grad = ndarray_to_rgbimage(normalise(gradients.y));
 
-        let filepath_x_grad = PathBuf::from(format!(
-            "{}/{}_x_grad.png",
-            get_tests_root(),
-            get_test_file_name()
-        ));
-        let filepath_y_grad = PathBuf::from(format!(
-            "{}/{}_y_grad.png",
-            get_tests_root(),
-            get_test_file_name()
-        ));
-
-        img_x_grad.save(filepath_x_grad).unwrap();
-        img_y_grad.save(filepath_y_grad).unwrap();
+        save_with_suffix(img_x_grad, "_x_grad");
+        save_with_suffix(img_y_grad, "_y_grad");
     }
 
     /// Hue is in the range [0, 360), saturation is in the range [0, 1], and value is in the range [0, 1].
@@ -484,8 +632,8 @@ mod tests {
     ) -> RgbImage {
         fn get_rgb(angle: f64, strength: f64) -> [f64; 3] {
             let hue = angle * 360.0;
-            let saturation = strength;
-            let value = 0.8;
+            let saturation = 0.5;
+            let value = strength;
             hsv_to_rgb(hue, saturation, value)
         }
 
@@ -526,12 +674,14 @@ mod tests {
 
         let img_anisotropy = angle_and_strength_to_rgbimage(angle, strength);
 
-        let filepath_anisotropy = PathBuf::from(format!(
-            "{}/{}_anisotropy.png",
-            get_tests_root(),
-            get_test_file_name()
-        ));
+        save_with_suffix(img_anisotropy, "_anisotropy");
+    }
 
-        img_anisotropy.save(filepath_anisotropy).unwrap();
+    #[test]
+    fn check_weighting_function() {
+        for i in 0..consts::NUM_SECTORS {
+            let img = ndarray_to_grayimage(normalise(disc_space_weighting(i)));
+            save_with_suffix(img, &format!("_weight_{i}"));
+        }
     }
 }
