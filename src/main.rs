@@ -14,7 +14,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     Basic(basic::Args),
-    Anisotropic(anisotropic::Args),
+    Anisotropic(anisotropic::args::Args),
 }
 
 fn main() {
