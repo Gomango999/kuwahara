@@ -5,8 +5,10 @@ use image::{GrayImage, ImageReader, ImageResult, RgbImage};
 use indicatif::ProgressStyle;
 use ndarray::{array, stack, Array1, Array2, Array3, Axis, Zip};
 use ndarray_conv::{ConvExt, ConvMode, PaddingMode};
+use std::cell::{LazyCell, RefCell};
 use std::f64::consts::PI;
 use std::path::PathBuf;
+use std::sync::{LazyLock, Mutex};
 use std::time::Instant;
 
 mod consts {
@@ -299,7 +301,18 @@ fn calc_anisotropy(tensor: &StructureTensor) -> Anisotropy {
 /// (0,0). This is the weight function that should be applied to pixels after
 /// the transformation and rotation have been applied. The different values of
 /// `i`` reprsent which segment of the disc we are considering.
-fn disc_space_weighting(i: usize) -> Array2<f64> {
+fn get_disc_space_weighting(i: usize) -> Array2<f64> {
+    assert!(i < consts::NUM_SECTORS);
+
+    // The convolution is surprisingly expensive, and the number of values we
+    // can call this function with is quite low, so we cache the result.
+    static CACHE: LazyLock<Mutex<[Option<Array2<f64>>; consts::NUM_SECTORS]>> =
+        LazyLock::new(|| Mutex::new([const { None }; consts::NUM_SECTORS]));
+    if let Some(disc_space_weighting) = &CACHE.lock().unwrap()[i] {
+        // TODO: Do I really need to clone?
+        return disc_space_weighting.clone();
+    }
+
     // Calculate the charateristic function
     const SIZE: usize = 27;
     let characteristic = array2_from_fn(SIZE, |x, y| {
@@ -332,6 +345,9 @@ fn disc_space_weighting(i: usize) -> Array2<f64> {
     let decay_kernel = gaussian_kernel(SIZE, consts::FILTER_DECAY_STD);
     let weights = weights * decay_kernel;
 
+    let mut cached = CACHE.lock().unwrap();
+    cached[i] = Some(weights.clone());
+
     weights
 }
 
@@ -353,7 +369,7 @@ fn query_point_in_array2(point: &Array1<f64>, arr: &Array2<f64>) -> f64 {
 /// Takes a given (x,y) offset from a pixel and returns it's weight.
 /// TODO: Update this comment
 fn sector_weight(i: usize, x: isize, y: isize, anisotropy: &Anisotropy) -> f64 {
-    let omega_weights = disc_space_weighting(i);
+    let omega_weights = get_disc_space_weighting(i);
     let offset: Array1<f64> = array![x as f64, y as f64];
     let omega_offset = anisotropy.transform.dot(&anisotropy.rotation.dot(&offset));
     query_point_in_array2(&omega_offset, &omega_weights)
@@ -680,7 +696,7 @@ mod tests {
     #[test]
     fn check_weighting_function() {
         for i in 0..consts::NUM_SECTORS {
-            let img = ndarray_to_grayimage(normalise(disc_space_weighting(i)));
+            let img = ndarray_to_grayimage(normalise(get_disc_space_weighting(i)));
             save_with_suffix(img, &format!("_weight_{i}"));
         }
     }
