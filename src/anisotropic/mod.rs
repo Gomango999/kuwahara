@@ -304,13 +304,14 @@ fn query_point_in_array2(point: &Array1<f64>, arr: &Array2<f64>) -> f64 {
     let half_height = height / 2;
     let half_width = width / 2;
 
-    let x = point[0] as usize + half_width;
-    let y = point[1] as usize + half_height;
+    let x = point[0] as isize + half_width as isize;
+    let y = point[1] as isize + half_height as isize;
 
-    if !(0..height).contains(&y) || !(0..width).contains(&x) {
+    if !(0..height as isize).contains(&y) || !(0..width as isize).contains(&x) {
         0.0
     } else {
-        arr[[y, x]]
+        // (y, x) are within the image, and can be safely converted to usize
+        arr[[y as usize, x as usize]]
     }
 }
 
@@ -341,32 +342,29 @@ impl PixelStatistics {
     fn new(
         x0: usize,
         y0: usize,
-        img: &Array3<f64>, // [3, H, W]
+        img: &Array3<f64>,
         anisotropy: &Anisotropy,
         disc_weights: &DiscWeights,
     ) -> Self {
-        const WINDOW_SIZE: usize = 27 * 2;
-        const HALF_WINDOW_SIZE: usize = WINDOW_SIZE / 2;
+        const WINDOW_SIZE: isize = 27 * 2;
+        const HALF_WINDOW_SIZE: isize = WINDOW_SIZE / 2;
+
+        let (_, height, width) = img.dim();
 
         let mut mean: Array2<f64> = Array2::zeros((consts::NUM_SECTORS, 3));
         let mut var: Array2<f64> = Array2::zeros((consts::NUM_SECTORS, 3));
-
         let mut divisor: Array1<f64> = Array1::zeros(consts::NUM_SECTORS);
 
-        let (_, height, width) = img.dim();
-        for y in y0 as isize - HALF_WINDOW_SIZE as isize..=y0 as isize + HALF_WINDOW_SIZE as isize {
-            for x in
-                x0 as isize - HALF_WINDOW_SIZE as isize..=x0 as isize + HALF_WINDOW_SIZE as isize
-            {
+        for y in -HALF_WINDOW_SIZE..HALF_WINDOW_SIZE {
+            for x in -HALF_WINDOW_SIZE..HALF_WINDOW_SIZE {
                 // (y1, x1) is the actual position of the pixel
                 let y1 = y + y0 as isize;
                 let x1 = x + x0 as isize;
                 if !(0..height as isize).contains(&y1) || !(0..width as isize).contains(&x1) {
                     continue;
                 }
-
-                // (y1, x1) are definitely inside the image, it's safe to type-cast
-                // them to usizes
+                // (y1, x1) are definitely inside the image, so  it's safe to
+                // type-cast them to usizes
                 let y1 = y1 as usize;
                 let x1 = x1 as usize;
 
@@ -390,7 +388,7 @@ impl PixelStatistics {
         for i in 0..consts::NUM_SECTORS {
             for c in 0..3 {
                 var[[i, c]] /= divisor[[i]];
-                var[[i, c]] -= mean[[i, c]]
+                var[[i, c]] -= mean[[i, c]] * mean[[i, c]];
             }
         }
 
@@ -404,11 +402,10 @@ fn calculate_pixel_value(
     x: usize,
     y: usize,
     img: &Array3<f64>,
-    anisotropy: &Array2<Anisotropy>,
+    anisotropy: &Anisotropy,
     disc_weights: &DiscWeights,
 ) -> Array1<f64> {
-    let PixelStatistics { mean, var } =
-        PixelStatistics::new(x, y, img, &anisotropy[[y, x]], disc_weights);
+    let PixelStatistics { mean, var } = PixelStatistics::new(x, y, img, &anisotropy, disc_weights);
 
     let mut output: Array1<f64> = Array1::zeros(3);
     let mut divisor: Array1<f64> = Array1::zeros(3);
@@ -444,7 +441,7 @@ fn apply_kuwahara_filter(
 
     for y in 0..height {
         for x in 0..width {
-            let rgb = calculate_pixel_value(x, y, img, anisotropy, disc_weights);
+            let rgb = calculate_pixel_value(x, y, img, &anisotropy[[y, x]], disc_weights);
             for c in 0..3 {
                 output[[c, y, x]] = rgb[c];
             }
@@ -487,16 +484,17 @@ pub fn run(args: &Args) -> ImageResult<()> {
 
     let disc_weights: DiscWeights = std::array::from_fn(|i| get_disc_space_weighting(i));
 
-    if args.intermediate_results {
-        disc_weights
-            .iter()
-            .enumerate()
-            .for_each(|(i, disc_weight)| {
-                let img = converters::ndarray_to_grayimage(converters::normalise(disc_weight));
-                let suffix = format!("_weight_{i}");
-                save_with_suffix(args, img, &suffix);
-            });
-    }
+    // TODO: Move this into a test or something
+    // if args.intermediate_results {
+    //     disc_weights
+    //         .iter()
+    //         .enumerate()
+    //         .for_each(|(i, disc_weight)| {
+    //             let img = converters::ndarray_to_grayimage(converters::normalise(disc_weight));
+    //             let suffix = format!("_weight_{i}");
+    //             save_with_suffix(args, img, &suffix);
+    //         });
+    // }
 
     let output = apply_kuwahara_filter(&img, &anisotropy, &disc_weights);
 
