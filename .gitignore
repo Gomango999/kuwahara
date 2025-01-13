@@ -1,4 +1,6 @@
 /target
 /examples
-perf.data*
+# perfromance testing
+perf.data
+perf.data.old
 flamegraph.svg

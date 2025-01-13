@@ -307,13 +307,11 @@ type DiscWeights = [Array2<f64>; consts::NUM_SECTORS];
 /// to the ith segment.
 fn sector_weight(
     i: usize,
-    x: isize,
-    y: isize,
+    offset: &Array1<f64>,
     anisotropy: &Anisotropy,
     disc_weights: &DiscWeights,
 ) -> f64 {
-    let offset: Array1<f64> = array![x as f64, y as f64];
-    let disc_offset = anisotropy.transform.dot(&offset);
+    let disc_offset = anisotropy.transform.dot(offset);
     query_point_in_array2(&disc_offset, &disc_weights[i])
 }
 
@@ -354,8 +352,9 @@ impl PixelStatistics {
                 let y1 = y1 as usize;
                 let x1 = x1 as usize;
 
+                let offset = array![x as f64, y as f64];
                 for i in 0..consts::NUM_SECTORS {
-                    let weight = sector_weight(i, x as isize, y as isize, anisotropy, disc_weights);
+                    let weight = sector_weight(i, &offset, anisotropy, disc_weights);
                     for c in 0..3 {
                         mean[[i, c]] += weight * img[[c, y1, x1]];
                         var[[i, c]] += weight * img[[c, y1, x1]] * img[[c, y1, x1]];
