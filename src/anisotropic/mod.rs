@@ -342,6 +342,16 @@ impl PixelStatistics {
 
                 let offset = array![x as f64, y as f64];
                 let disc_offset = anisotropy.transform.dot(&offset);
+
+                // Optimisation: We don't bother to calculate the weight for this
+                // pixel if we know that it is outside of the effective radius
+                // of the sector kernels.
+                static EFFECTIVE_RADIUS_SQUARED: f64 =
+                    (consts::FILTER_DECAY_STD * 3.0) * (consts::FILTER_DECAY_STD * 3.0);
+                if disc_offset[0].powi(2) + disc_offset[1].powi(2) > EFFECTIVE_RADIUS_SQUARED {
+                    continue;
+                }
+
                 for i in 0..consts::NUM_SECTORS {
                     let weight = query_point_in_array2(&disc_offset, &disc_weights[i]);
                     for c in 0..3 {
