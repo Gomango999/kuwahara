@@ -9,13 +9,13 @@ pub struct Args {
     #[arg(short, long)]
     pub input: PathBuf,
 
-    #[arg(short, long, default_value_t = false)]
+    #[arg(long, default_value_t = false)]
     pub intermediate_results: bool,
 
     #[arg(short, long)]
     pub output: Option<PathBuf>,
 
-    #[arg(short, long)]
+    #[arg(long)]
     pub output_dir: Option<PathBuf>,
 }
 

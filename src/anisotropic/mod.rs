@@ -365,8 +365,15 @@ impl PixelStatistics {
 
                 for i in 0..consts::NUM_SECTORS {
                     // let weight = query_point_in_array2(&disc_offset, &disc_weights[i]);
-                    let weight =
-                        disc_weights[i][[disc_offset[0] as usize, disc_offset[1] as usize]];
+                    // let y2 = (disc_offset[0] as isize + HALF_WINDOW_SIZE) as usize;
+                    // let x2 = (disc_offset[0] as isize + HALF_WINDOW_SIZE) as usize;
+                    // println!("{} {}", y2, x2);
+
+                    // CR nlee: Change this to a const
+                    let weight = disc_weights[i][[
+                        (disc_offset[0] as isize + 13) as usize,
+                        (disc_offset[1] as isize + 13) as usize,
+                    ]];
 
                     for c in 0..3 {
                         mean[[i, c]] += weight * img[[c, y1, x1]];
