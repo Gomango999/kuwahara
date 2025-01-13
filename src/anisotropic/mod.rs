@@ -303,18 +303,6 @@ fn query_point_in_array2(point: &Array1<f64>, arr: &Array2<f64>) -> f64 {
 
 type DiscWeights = [Array2<f64>; consts::NUM_SECTORS];
 
-/// Takes a given (x,y) offset from a pixel and returns it's weight with respect
-/// to the ith segment.
-fn sector_weight(
-    i: usize,
-    offset: &Array1<f64>,
-    anisotropy: &Anisotropy,
-    disc_weights: &DiscWeights,
-) -> f64 {
-    let disc_offset = anisotropy.transform.dot(offset);
-    query_point_in_array2(&disc_offset, &disc_weights[i])
-}
-
 /// Mean and var are 2D arrays of size [consts::NUM_SECTORS, 3]. The ith value
 /// represents the mean/variance of the RGB values in the ith sector.
 struct PixelStatistics {
@@ -353,8 +341,9 @@ impl PixelStatistics {
                 let x1 = x1 as usize;
 
                 let offset = array![x as f64, y as f64];
+                let disc_offset = anisotropy.transform.dot(&offset);
                 for i in 0..consts::NUM_SECTORS {
-                    let weight = sector_weight(i, &offset, anisotropy, disc_weights);
+                    let weight = query_point_in_array2(&disc_offset, &disc_weights[i]);
                     for c in 0..3 {
                         mean[[i, c]] += weight * img[[c, y1, x1]];
                         var[[i, c]] += weight * img[[c, y1, x1]] * img[[c, y1, x1]];
