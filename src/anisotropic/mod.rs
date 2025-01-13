@@ -235,7 +235,7 @@ fn smooth_structure_tensors(
     structure_tensors
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct Anisotropy {
     anisotropy: f64,
     angle: f64, // bounded by [-PI, PI]
@@ -412,7 +412,9 @@ fn calculate_pixel_value(
 
     let std = var.sqrt();
     for i in 0..consts::NUM_SECTORS {
-        let norm = (std[[i, 0]].powi(2) + std[[i, 1]].powi(2) + std[[i, 2]].powi(2)).sqrt();
+        // We multiply the norm by 255, since the paper expects pixel values
+        // between [0, 255], whereas we currently use [0, 1]
+        let norm = (std[[i, 0]].powi(2) + std[[i, 1]].powi(2) + std[[i, 2]].powi(2)).sqrt() * 255.0;
         let weighting_factor = 1.0 / (1.0 + norm.powi(consts::SHARPNESS_COEFFICIENT as i32));
 
         for c in 0..3 {
@@ -468,6 +470,19 @@ pub fn run(args: &Args) -> ImageResult<()> {
     }
 
     let structure_tensors = gradients.into_structure_tensors();
+
+    if args.intermediate_results {
+        let anisotropy = structure_tensors.map(|tensor| tensor.into_anisotropy());
+
+        let strength = anisotropy.mapv(|anisotropy| anisotropy.anisotropy);
+        let angle = anisotropy.mapv(|anisotropy| (anisotropy.angle + (PI / 2.0)) / PI);
+        // The elements of angle are normalised from [-PI/2, PI/2] to [0,1]
+
+        let img_anisotropy = converters::angle_and_strength_to_rgbimage(angle, strength);
+
+        save_with_suffix(args, img_anisotropy, "_unsmoothed_anisotropy");
+    }
+
     let structure_tensors = smooth_structure_tensors(&structure_tensors);
 
     let anisotropy = structure_tensors.map(|tensor| tensor.into_anisotropy());
@@ -483,18 +498,6 @@ pub fn run(args: &Args) -> ImageResult<()> {
     }
 
     let disc_weights: DiscWeights = std::array::from_fn(|i| get_disc_space_weighting(i));
-
-    // TODO: Move this into a test or something
-    // if args.intermediate_results {
-    //     disc_weights
-    //         .iter()
-    //         .enumerate()
-    //         .for_each(|(i, disc_weight)| {
-    //             let img = converters::ndarray_to_grayimage(converters::normalise(disc_weight));
-    //             let suffix = format!("_weight_{i}");
-    //             save_with_suffix(args, img, &suffix);
-    //         });
-    // }
 
     let output = apply_kuwahara_filter(&img, &anisotropy, &disc_weights);
 
