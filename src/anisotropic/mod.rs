@@ -7,7 +7,6 @@ use ndarray_conv::{ConvExt, ConvMode, PaddingMode};
 use std::f64::consts::PI;
 use std::ops::Deref;
 use std::path::PathBuf;
-use std::sync::{LazyLock, Mutex};
 
 pub mod args;
 mod converters;
@@ -111,7 +110,6 @@ impl StructureTensor {
                 anisotropy: 0.0,
                 angle: 0.0,
                 transform: identity.clone(),
-                rotation: identity.clone(),
             };
         } else {
             let (eigenvalue1, eigenvalue2) = self.get_eigenvalues();
@@ -122,18 +120,19 @@ impl StructureTensor {
             let anisotropy = (eigenvalue1 - eigenvalue2) / (eigenvalue1 + eigenvalue2);
 
             const ALPHA: f64 = 1.0;
-            let transform = array![
+            let scale = array![
                 [ALPHA / (ALPHA + anisotropy), 0.],
                 [0., (ALPHA + anisotropy) / ALPHA]
             ];
 
             let rotation = array![[angle.cos(), -angle.sin()], [angle.sin(), angle.cos()]];
 
+            let transform = scale.dot(&rotation);
+
             Anisotropy {
                 anisotropy,
                 angle,
                 transform,
-                rotation,
             }
         }
     }
@@ -240,7 +239,6 @@ struct Anisotropy {
     anisotropy: f64,
     angle: f64, // bounded by [-PI, PI]
     transform: Array2<f64>,
-    rotation: Array2<f64>,
 }
 
 /// The i-th weighting function for the disc, returned as a 2D array centered at
@@ -249,15 +247,6 @@ struct Anisotropy {
 /// `i`` reprsent which segment of the disc we are considering.
 fn get_disc_space_weighting(i: usize) -> Array2<f64> {
     assert!(i < consts::NUM_SECTORS);
-
-    // The convolution is surprisingly expensive, and the number of values we
-    // can call this function with is quite low, so we cache the result.
-    static CACHE: LazyLock<Mutex<[Option<Array2<f64>>; consts::NUM_SECTORS]>> =
-        LazyLock::new(|| Mutex::new([const { None }; consts::NUM_SECTORS]));
-    if let Some(disc_space_weighting) = &CACHE.lock().unwrap()[i] {
-        // TODO: Do I really need to clone?
-        return disc_space_weighting.clone();
-    }
 
     // Calculate the charateristic function
     const SIZE: usize = 27;
@@ -290,9 +279,6 @@ fn get_disc_space_weighting(i: usize) -> Array2<f64> {
     // Ensure the characteristic function decays the further from (0,0) we go
     let decay_kernel = gaussian_kernel(SIZE, consts::FILTER_DECAY_STD);
     let weights = weights * decay_kernel;
-
-    let mut cached = CACHE.lock().unwrap();
-    cached[i] = Some(weights.clone());
 
     weights
 }
@@ -327,7 +313,7 @@ fn sector_weight(
     disc_weights: &DiscWeights,
 ) -> f64 {
     let offset: Array1<f64> = array![x as f64, y as f64];
-    let disc_offset = anisotropy.transform.dot(&anisotropy.rotation.dot(&offset));
+    let disc_offset = anisotropy.transform.dot(&offset);
     query_point_in_array2(&disc_offset, &disc_weights[i])
 }
 
@@ -405,6 +391,7 @@ fn calculate_pixel_value(
     anisotropy: &Anisotropy,
     disc_weights: &DiscWeights,
 ) -> Array1<f64> {
+    // Calculate the mean and variance of each of the sectors in our image.
     let PixelStatistics { mean, var } = PixelStatistics::new(x, y, img, &anisotropy, disc_weights);
 
     let mut output: Array1<f64> = Array1::zeros(3);
