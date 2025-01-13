@@ -4,6 +4,7 @@ use image::{EncodableLayout, ImageBuffer, ImageReader, ImageResult, Pixel, Pixel
 use indicatif::{ProgressBar, ProgressStyle};
 use ndarray::{array, stack, Array1, Array2, Array3, Axis, Zip};
 use ndarray_conv::{ConvExt, ConvMode, PaddingMode};
+use rayon::prelude::*;
 use std::f64::consts::PI;
 use std::ops::Deref;
 use std::path::PathBuf;
@@ -283,24 +284,6 @@ fn get_disc_space_weighting(i: usize) -> Array2<f64> {
     weights
 }
 
-/// A quick and dirty function that just truncates the floating points of the
-/// coordinates in the point to get the array value.
-fn query_point_in_array2(point: &[f64; 2], arr: &Array2<f64>) -> f64 {
-    let (height, width) = arr.dim();
-    let half_height = height / 2;
-    let half_width = width / 2;
-
-    let x = point[0] as isize + half_width as isize;
-    let y = point[1] as isize + half_height as isize;
-
-    if !(0..height as isize).contains(&y) || !(0..width as isize).contains(&x) {
-        0.0
-    } else {
-        // (y, x) are within the image, and can be safely converted to usize
-        arr[[y as usize, x as usize]]
-    }
-}
-
 type DiscWeights = [Array2<f64>; consts::NUM_SECTORS];
 
 /// Mean and var are 2D arrays of size [consts::NUM_SECTORS, 3]. The ith value
@@ -339,36 +322,36 @@ impl PixelStatistics {
         let mut divisor: Array1<f64> = Array1::zeros(consts::NUM_SECTORS);
 
         for y in -HALF_WINDOW_SIZE..HALF_WINDOW_SIZE {
+            let y1 = y + y0 as isize;
+            if !(0..height as isize).contains(&y1) {
+                continue;
+            }
+            let y1 = y1 as usize;
+
             for x in -HALF_WINDOW_SIZE..HALF_WINDOW_SIZE {
                 // (y1, x1) is the actual position of the pixel
-                let y1 = y + y0 as isize;
                 let x1 = x + x0 as isize;
-                if !(0..height as isize).contains(&y1) || !(0..width as isize).contains(&x1) {
+                if !(0..width as isize).contains(&x1) {
                     continue;
                 }
-                // (y1, x1) are definitely inside the image, so  it's safe to
+                // (y1, x1) are definitely inside the image, so it's safe to
                 // type-cast them to usizes
-                let y1 = y1 as usize;
                 let x1 = x1 as usize;
 
                 let offset = [x as f64, y as f64];
                 let disc_offset = transform_point(&offset, &anisotropy.transform);
 
-                // Optimisation: We don't bother to calculate the weight for this
-                // pixel if we know that it is outside of the effective radius
-                // of the sector kernels.
+                // Optimisation: We don't bother to calculate the weight for
+                // this pixel if we know that it is outside of the effective
+                // radius of the sector kernels.
                 static EFFECTIVE_RADIUS_SQUARED: f64 =
                     (consts::FILTER_DECAY_STD * 3.0) * (consts::FILTER_DECAY_STD * 3.0);
+
                 if disc_offset[0].powi(2) + disc_offset[1].powi(2) > EFFECTIVE_RADIUS_SQUARED {
                     continue;
                 }
 
                 for i in 0..consts::NUM_SECTORS {
-                    // let weight = query_point_in_array2(&disc_offset, &disc_weights[i]);
-                    // let y2 = (disc_offset[0] as isize + HALF_WINDOW_SIZE) as usize;
-                    // let x2 = (disc_offset[0] as isize + HALF_WINDOW_SIZE) as usize;
-                    // println!("{} {}", y2, x2);
-
                     // CR nlee: Change this to a const
                     let weight = disc_weights[i][[
                         (disc_offset[0] as isize + 13) as usize,
@@ -439,23 +422,30 @@ fn apply_kuwahara_filter(
 ) -> Array3<f64> {
     let (_, height, width) = img.dim();
 
-    let mut output = Array3::zeros((3, height, width));
-
     let pb = ProgressBar::new((height * width) as u64);
     pb.set_style(ProgressStyle::default_bar()
         .template("{spinner:.green} [{elapsed_precise}] [{bar:50.cyan/blue}] {pos}/{len} ({percent}%) ETA: {eta}")
         .unwrap()
         .progress_chars("#>-"));
 
-    for y in 0..height {
-        for x in 0..width {
-            let rgb = calculate_pixel_value(x, y, img, &anisotropy[[y, x]], disc_weights);
-            for c in 0..3 {
-                output[[c, y, x]] = rgb[c];
+    let chunked_outputs: Vec<Array2<f64>> = (0..height)
+        .into_par_iter()
+        .map(|y| {
+            let mut output = Array2::zeros((width, 3));
+            for x in 0..width {
+                let rgb = calculate_pixel_value(x, y, img, &anisotropy[[y, x]], disc_weights);
+                for c in 0..3 {
+                    output[[x, c]] = rgb[c];
+                }
+                pb.inc(1);
             }
-            pb.inc(1);
-        }
-    }
+            output
+        })
+        .collect();
+
+    let output_slices: Vec<_> = chunked_outputs.iter().map(|a| a.view()).collect();
+    let output = stack(Axis(0), &output_slices).unwrap();
+    let output = output.permuted_axes([2, 0, 1]);
 
     pb.finish_with_message("done!");
 

@@ -518,6 +518,7 @@ dependencies = [
  "indicatif",
  "ndarray",
  "ndarray-conv",
+ "rayon",
 ]
 
 [[package]]
