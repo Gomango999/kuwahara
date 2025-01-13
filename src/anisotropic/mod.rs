@@ -285,7 +285,7 @@ fn get_disc_space_weighting(i: usize) -> Array2<f64> {
 
 /// A quick and dirty function that just truncates the floating points of the
 /// coordinates in the point to get the array value.
-fn query_point_in_array2(point: &Array1<f64>, arr: &Array2<f64>) -> f64 {
+fn query_point_in_array2(point: &[f64; 2], arr: &Array2<f64>) -> f64 {
     let (height, width) = arr.dim();
     let half_height = height / 2;
     let half_width = width / 2;
@@ -308,6 +308,17 @@ type DiscWeights = [Array2<f64>; consts::NUM_SECTORS];
 struct PixelStatistics {
     mean: Array2<f64>,
     var: Array2<f64>,
+}
+
+#[inline(always)]
+fn transform_point(point: &[f64; 2], transform: &Array2<f64>) -> [f64; 2] {
+    let mut result = [0.0, 0.0];
+    for i in 0..2 {
+        for j in 0..2 {
+            result[i] += transform[[i, j]] * point[j];
+        }
+    }
+    result
 }
 
 impl PixelStatistics {
@@ -340,8 +351,8 @@ impl PixelStatistics {
                 let y1 = y1 as usize;
                 let x1 = x1 as usize;
 
-                let offset = array![x as f64, y as f64];
-                let disc_offset = anisotropy.transform.dot(&offset);
+                let offset = [x as f64, y as f64];
+                let disc_offset = transform_point(&offset, &anisotropy.transform);
 
                 // Optimisation: We don't bother to calculate the weight for this
                 // pixel if we know that it is outside of the effective radius
@@ -353,7 +364,10 @@ impl PixelStatistics {
                 }
 
                 for i in 0..consts::NUM_SECTORS {
-                    let weight = query_point_in_array2(&disc_offset, &disc_weights[i]);
+                    // let weight = query_point_in_array2(&disc_offset, &disc_weights[i]);
+                    let weight =
+                        disc_weights[i][[disc_offset[0] as usize, disc_offset[1] as usize]];
+
                     for c in 0..3 {
                         mean[[i, c]] += weight * img[[c, y1, x1]];
                         var[[i, c]] += weight * img[[c, y1, x1]] * img[[c, y1, x1]];
