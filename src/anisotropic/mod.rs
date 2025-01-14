@@ -311,83 +311,81 @@ fn transform_point(point: &[f64; 2], transform: &Array2<f64>) -> [f64; 2] {
     result
 }
 
-impl PixelStatistics {
-    fn new(
-        x0: usize,
-        y0: usize,
-        img: &Array3<f64>,
-        anisotropy: &Anisotropy,
-        disc_weights: &DiscWeights,
-    ) -> Self {
-        const WINDOW_SIZE: isize = consts::DISC_KERNEL_DIAMETER as isize * 2;
-        const HALF_WINDOW_SIZE: isize = WINDOW_SIZE / 2;
+fn compute_pixel_statistics(
+    x0: usize,
+    y0: usize,
+    img: &Array3<f64>,
+    anisotropy: &Anisotropy,
+    disc_weights: &DiscWeights,
+) -> PixelStatistics {
+    const WINDOW_SIZE: isize = consts::DISC_KERNEL_DIAMETER as isize * 2;
+    const HALF_WINDOW_SIZE: isize = WINDOW_SIZE / 2;
 
-        let (_, height, width) = img.dim();
+    let (_, height, width) = img.dim();
 
-        let mut mean: Array2<f64> = Array2::zeros((consts::NUM_SECTORS, 3));
-        let mut var: Array2<f64> = Array2::zeros((consts::NUM_SECTORS, 3));
-        let mut divisor: Array1<f64> = Array1::zeros(consts::NUM_SECTORS);
+    let mut mean: Array2<f64> = Array2::zeros((consts::NUM_SECTORS, 3));
+    let mut var: Array2<f64> = Array2::zeros((consts::NUM_SECTORS, 3));
+    let mut divisor: Array1<f64> = Array1::zeros(consts::NUM_SECTORS);
 
-        for y in -HALF_WINDOW_SIZE..HALF_WINDOW_SIZE {
-            let y1 = y + y0 as isize;
-            if !(0..height as isize).contains(&y1) {
+    for y in -HALF_WINDOW_SIZE..HALF_WINDOW_SIZE {
+        let y1 = y + y0 as isize;
+        if !(0..height as isize).contains(&y1) {
+            continue;
+        }
+        let y1 = y1 as usize;
+
+        for x in -HALF_WINDOW_SIZE..HALF_WINDOW_SIZE {
+            // (y1, x1) is the actual position of the pixel
+            let x1 = x + x0 as isize;
+            if !(0..width as isize).contains(&x1) {
                 continue;
             }
-            let y1 = y1 as usize;
+            // (y1, x1) are definitely inside the image, so it's safe to
+            // type-cast them to usizes
+            let x1 = x1 as usize;
 
-            for x in -HALF_WINDOW_SIZE..HALF_WINDOW_SIZE {
-                // (y1, x1) is the actual position of the pixel
-                let x1 = x + x0 as isize;
-                if !(0..width as isize).contains(&x1) {
-                    continue;
+            let offset = [x as f64, y as f64];
+            let disc_offset = transform_point(&offset, &anisotropy.transform);
+
+            // Optimisation: We don't bother to calculate the weight for
+            // this pixel if we know that it is outside of the effective
+            // radius of the sector kernels.
+            static EFFECTIVE_RADIUS_SQUARED: f64 =
+                (consts::FILTER_DECAY_STD * 3.0) * (consts::FILTER_DECAY_STD * 3.0);
+
+            if disc_offset[0].powi(2) + disc_offset[1].powi(2) > EFFECTIVE_RADIUS_SQUARED {
+                continue;
+            }
+
+            for i in 0..consts::NUM_SECTORS {
+                let weight = disc_weights[i][[
+                    disc_offset[0] as usize + consts::DISC_KERNEL_RADIUS,
+                    disc_offset[1] as usize + consts::DISC_KERNEL_RADIUS,
+                ]];
+
+                for c in 0..3 {
+                    mean[[i, c]] += weight * img[[c, y1, x1]];
+                    var[[i, c]] += weight * img[[c, y1, x1]] * img[[c, y1, x1]];
                 }
-                // (y1, x1) are definitely inside the image, so it's safe to
-                // type-cast them to usizes
-                let x1 = x1 as usize;
-
-                let offset = [x as f64, y as f64];
-                let disc_offset = transform_point(&offset, &anisotropy.transform);
-
-                // Optimisation: We don't bother to calculate the weight for
-                // this pixel if we know that it is outside of the effective
-                // radius of the sector kernels.
-                static EFFECTIVE_RADIUS_SQUARED: f64 =
-                    (consts::FILTER_DECAY_STD * 3.0) * (consts::FILTER_DECAY_STD * 3.0);
-
-                if disc_offset[0].powi(2) + disc_offset[1].powi(2) > EFFECTIVE_RADIUS_SQUARED {
-                    continue;
-                }
-
-                for i in 0..consts::NUM_SECTORS {
-                    let weight = disc_weights[i][[
-                        disc_offset[0] as usize + consts::DISC_KERNEL_RADIUS,
-                        disc_offset[1] as usize + consts::DISC_KERNEL_RADIUS,
-                    ]];
-
-                    for c in 0..3 {
-                        mean[[i, c]] += weight * img[[c, y1, x1]];
-                        var[[i, c]] += weight * img[[c, y1, x1]] * img[[c, y1, x1]];
-                    }
-                    divisor[[i]] += weight;
-                }
+                divisor[[i]] += weight;
             }
         }
-
-        // Normalise the mean and variance by the sum of weights.
-        for i in 0..consts::NUM_SECTORS {
-            for c in 0..3 {
-                mean[[i, c]] /= divisor[[i]];
-            }
-        }
-        for i in 0..consts::NUM_SECTORS {
-            for c in 0..3 {
-                var[[i, c]] /= divisor[[i]];
-                var[[i, c]] -= mean[[i, c]] * mean[[i, c]];
-            }
-        }
-
-        PixelStatistics { mean, var }
     }
+
+    // Normalise the mean and variance by the sum of weights.
+    for i in 0..consts::NUM_SECTORS {
+        for c in 0..3 {
+            mean[[i, c]] /= divisor[[i]];
+        }
+    }
+    for i in 0..consts::NUM_SECTORS {
+        for c in 0..3 {
+            var[[i, c]] /= divisor[[i]];
+            var[[i, c]] -= mean[[i, c]] * mean[[i, c]];
+        }
+    }
+
+    PixelStatistics { mean, var }
 }
 
 /// Calculates the final pixel value of (x,y) in the image as a Array1
@@ -400,7 +398,8 @@ fn calculate_pixel_value(
     disc_weights: &DiscWeights,
 ) -> Array1<f64> {
     // Calculate the mean and variance of each of the sectors in our image.
-    let PixelStatistics { mean, var } = PixelStatistics::new(x, y, img, &anisotropy, disc_weights);
+    let PixelStatistics { mean, var } =
+        compute_pixel_statistics(x, y, img, &anisotropy, disc_weights);
 
     let mut output: Array1<f64> = Array1::zeros(3);
     let mut divisor: Array1<f64> = Array1::zeros(3);
