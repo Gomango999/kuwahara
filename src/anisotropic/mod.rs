@@ -28,8 +28,9 @@ mod consts {
     // Standard deviation for filter decay
     pub static FILTER_DECAY_STD: f64 = 3.0;
     // Affects how much standard deviations are weighted. Higher values make
-    // low standard deviation sectors dominate higher ones.
-    pub static SHARPNESS_COEFFICIENT: u64 = 8;
+    // low standard deviation sectors dominate higher ones, theoretically
+    // leading to sharper images.
+    pub static SHARPNESS_COEFFICIENT: u64 = 16;
     // The radius of the disc kernel
     pub static DISC_KERNEL_RADIUS: usize = 13;
     pub static DISC_KERNEL_DIAMETER: usize = DISC_KERNEL_RADIUS * 2 + 1;
