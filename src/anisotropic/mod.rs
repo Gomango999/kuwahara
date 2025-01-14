@@ -30,7 +30,7 @@ mod consts {
     // Affects how much standard deviations are weighted. Higher values make
     // low standard deviation sectors dominate higher ones, theoretically
     // leading to sharper images.
-    pub static SHARPNESS_COEFFICIENT: u64 = 16;
+    pub static SHARPNESS_COEFFICIENT: u64 = 8;
     // The radius of the disc kernel
     pub static DISC_KERNEL_RADIUS: usize = 13;
     pub static DISC_KERNEL_DIAMETER: usize = DISC_KERNEL_RADIUS * 2 + 1;
@@ -382,7 +382,9 @@ fn compute_pixel_statistics(
         for c in 0..3 {
             var[[i, c]] /= divisor[[i]];
             var[[i, c]] -= mean[[i, c]] * mean[[i, c]];
-            // I think this might be due to floating point error
+
+            // Sometimes, var[[i, c]] is smaller than 0, perhaps due to floating
+            // point error. We correct this here.
             var[[i, c]] = if var[[i, c]] < 0.0 { 0.0 } else { var[[i, c]] };
         }
     }
