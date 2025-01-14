@@ -382,6 +382,8 @@ fn compute_pixel_statistics(
         for c in 0..3 {
             var[[i, c]] /= divisor[[i]];
             var[[i, c]] -= mean[[i, c]] * mean[[i, c]];
+            // I think this might be due to floating point error
+            var[[i, c]] = if var[[i, c]] < 0.0 { 0.0 } else { var[[i, c]] };
         }
     }
 
