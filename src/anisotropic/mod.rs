@@ -295,8 +295,12 @@ struct PixelStatistics {
     var: Array2<f64>,
 }
 
+/// Takes a point and a 2x2 transformation matrix and does simple matrix multiplication.
 #[inline(always)]
 fn transform_point(point: &[f64; 2], transform: &Array2<f64>) -> [f64; 2] {
+    // We use this since using an Array1 for the point results in a heap allocated
+    // array, which is slow. We use a stack allocated one instead, which means
+    // we have to code our own matrix multiplication function.
     let mut result = [0.0, 0.0];
     for i in 0..2 {
         for j in 0..2 {
