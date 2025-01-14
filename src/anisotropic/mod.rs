@@ -27,8 +27,12 @@ mod consts {
     pub static FILTER_SMOOTHING_STD: f64 = 1.0;
     // Standard deviation for filter decay
     pub static FILTER_DECAY_STD: f64 = 3.0;
-    // TODO: Something
+    // Affects how much standard deviations are weighted. Higher values make
+    // low standard deviation sectors dominate higher ones.
     pub static SHARPNESS_COEFFICIENT: u64 = 8;
+    // The radius of the disc kernel
+    pub static DISC_KERNEL_RADIUS: usize = 13;
+    pub static DISC_KERNEL_DIAMETER: usize = DISC_KERNEL_RADIUS * 2 + 1;
 }
 
 fn load_image(input_file: &PathBuf) -> ImageResult<Array3<f64>> {
@@ -250,10 +254,8 @@ fn get_disc_space_weighting(i: usize) -> Array2<f64> {
     assert!(i < consts::NUM_SECTORS);
 
     // Calculate the charateristic function
-    const SIZE: usize = 27;
-    let characteristic = converters::array2_from_fn(SIZE, |x, y| {
-        let half_size = (SIZE / 2) as f64;
-        let inside_circle = x.powi(2) + y.powi(2) <= (half_size).powi(2);
+    let characteristic = converters::array2_from_fn(consts::DISC_KERNEL_DIAMETER, |x, y| {
+        let inside_circle = x.powi(2) + y.powi(2) <= (consts::DISC_KERNEL_RADIUS as f64).powi(2);
 
         let angle = y.atan2(x);
         let lower = ((2.0 * i as f64 - 1.0) * PI) / consts::NUM_SECTORS as f64;
@@ -278,7 +280,7 @@ fn get_disc_space_weighting(i: usize) -> Array2<f64> {
         .unwrap();
 
     // Ensure the characteristic function decays the further from (0,0) we go
-    let decay_kernel = gaussian_kernel(SIZE, consts::FILTER_DECAY_STD);
+    let decay_kernel = gaussian_kernel(consts::DISC_KERNEL_DIAMETER, consts::FILTER_DECAY_STD);
     let weights = weights * decay_kernel;
 
     weights
@@ -312,7 +314,7 @@ impl PixelStatistics {
         anisotropy: &Anisotropy,
         disc_weights: &DiscWeights,
     ) -> Self {
-        const WINDOW_SIZE: isize = 27 * 2;
+        const WINDOW_SIZE: isize = consts::DISC_KERNEL_DIAMETER as isize * 2;
         const HALF_WINDOW_SIZE: isize = WINDOW_SIZE / 2;
 
         let (_, height, width) = img.dim();
@@ -352,10 +354,9 @@ impl PixelStatistics {
                 }
 
                 for i in 0..consts::NUM_SECTORS {
-                    // CR nlee: Change this to a const
                     let weight = disc_weights[i][[
-                        (disc_offset[0] as isize + 13) as usize,
-                        (disc_offset[1] as isize + 13) as usize,
+                        disc_offset[0] as usize + consts::DISC_KERNEL_RADIUS,
+                        disc_offset[1] as usize + consts::DISC_KERNEL_RADIUS,
                     ]];
 
                     for c in 0..3 {
