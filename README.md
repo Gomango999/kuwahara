@@ -1,6 +1,6 @@
 # Kuwahara Filter
 
-The [Kuwahara filter](https://en.wikipedia.org/wiki/Kuwahara_filter) is an image-processing technique for reducing noise whilst preserving edges. One of the interesting consequences of this algorithm is will generate "brush-stroke" like artifacts, which can acts as a painterly filter on the image.
+The [Kuwahara Filter](https://en.wikipedia.org/wiki/Kuwahara_filter) is an image-processing technique for reducing noise whilst preserving edges. One of the interesting consequences of this algorithm is will generate "brush-stroke" like artifacts, which can acts as a painterly filter on the image.
 
 
 ## Examples
@@ -19,7 +19,8 @@ Original                        | Basic                            | Anisotropic
 ./kuwahara basic --input ./example.png --kernel-size 5
 ```
 
-The `--kernel-size` flag determines how big the "brush strokes" will be. You can also modify the output directory and filename with `--output` and `--output-dir`.
+The `--kernel-size` flag determines how big the "brush strokes" will be. 
+You can also modify the output filename and directory with `--output` and `--output-dir`.
 
 ### Anisotropic
 
