@@ -17,23 +17,24 @@ use args::Args;
 mod consts {
     // Number of sectors in the filter
     pub static NUM_SECTORS: usize = 8;
-    // Standard deviation for Gaussian partial derivatives
+    // Constants for the partial_derivative kernel
+    // Decreasing this leads to tighter edge detection, but also more artifacts.
     pub static PARTIAL_DERIVATIVE_STD: f64 = 1.0;
-    // Gaussian spatial derivatives kernel size
-    pub static PARTIAL_DERIVATIVE_KERNEL_SIZE: usize = 5;
+    pub static PARTIAL_DERIVATIVE_KERNEL_SIZE: usize =
+        (PARTIAL_DERIVATIVE_STD * 3.0) as usize * 2 + 1;
     // Standard deviation for smoothing structure tensors
-    pub static TENSOR_SMOOTHING_STD: f64 = 1.0;
+    pub static TENSOR_SMOOTHING_STD: f64 = 2.0;
     // Standard deviation of filter sector smoothing
     pub static FILTER_SMOOTHING_STD: f64 = 1.0;
     // Standard deviation for filter decay
     pub static FILTER_DECAY_STD: f64 = 3.0;
+    // The radius of the disc kernel
+    pub static DISC_KERNEL_RADIUS: usize = (FILTER_DECAY_STD * 3.0) as usize;
+    pub static DISC_KERNEL_DIAMETER: usize = DISC_KERNEL_RADIUS * 2 + 1;
     // Affects how much standard deviations are weighted. Higher values make
     // low standard deviation sectors dominate higher ones, theoretically
     // leading to sharper images.
     pub static SHARPNESS_COEFFICIENT: u64 = 8;
-    // The radius of the disc kernel
-    pub static DISC_KERNEL_RADIUS: usize = 13;
-    pub static DISC_KERNEL_DIAMETER: usize = DISC_KERNEL_RADIUS * 2 + 1;
 }
 
 fn load_image(input_file: &PathBuf) -> ImageResult<Array3<f64>> {
@@ -121,7 +122,7 @@ impl StructureTensor {
             let (eigenvalue1, eigenvalue2) = self.get_eigenvalues();
 
             let t = array![eigenvalue1 - self.e, -self.f];
-            let angle = t[1].atan2(t[0]);
+            let angle = -t[1].atan2(t[0]);
 
             let anisotropy = (eigenvalue1 - eigenvalue2) / (eigenvalue1 + eigenvalue2);
 
@@ -131,7 +132,8 @@ impl StructureTensor {
                 [0., (ALPHA + anisotropy) / ALPHA]
             ];
 
-            let rotation = array![[angle.cos(), -angle.sin()], [angle.sin(), angle.cos()]];
+            // Gives rotation by `-angle`
+            let rotation = array![[-angle.cos(), angle.sin()], [-angle.sin(), -angle.cos()]];
 
             let transform = scale.dot(&rotation);
 
@@ -327,14 +329,14 @@ fn compute_pixel_statistics(
     let mut var: Array2<f64> = Array2::zeros((consts::NUM_SECTORS, 3));
     let mut divisor: Array1<f64> = Array1::zeros(consts::NUM_SECTORS);
 
-    for y in -HALF_WINDOW_SIZE..HALF_WINDOW_SIZE {
+    for y in -HALF_WINDOW_SIZE..=HALF_WINDOW_SIZE {
         let y1 = y + y0 as isize;
         if !(0..height as isize).contains(&y1) {
             continue;
         }
         let y1 = y1 as usize;
 
-        for x in -HALF_WINDOW_SIZE..HALF_WINDOW_SIZE {
+        for x in -HALF_WINDOW_SIZE..=HALF_WINDOW_SIZE {
             // (y1, x1) is the actual position of the pixel
             let x1 = x + x0 as isize;
             if !(0..width as isize).contains(&x1) {
@@ -452,6 +454,7 @@ fn apply_kuwahara_filter(
         })
         .collect();
 
+    // Stack outputs together into [3 x H x W] array
     let output_slices: Vec<_> = chunked_outputs.iter().map(|a| a.view()).collect();
     let output = stack(Axis(0), &output_slices).unwrap();
     let output = output.permuted_axes([2, 0, 1]);
@@ -494,8 +497,11 @@ pub fn run(args: &Args) -> ImageResult<()> {
 
     if args.intermediate_results {
         let strength = anisotropy.mapv(|anisotropy| anisotropy.anisotropy);
-        let angle = anisotropy.mapv(|anisotropy| (anisotropy.angle + (PI / 2.0)) / PI);
-        // The elements of angle are normalised from [-PI/2, PI/2] to [0,1]
+        let angle = anisotropy.mapv(|anisotropy| (anisotropy.angle + PI) / (PI * 2.0));
+        // The elements of angle are normalised from [-PI, PI] to [0,1]
+
+        let img_angle = converters::ndarray_to_grayimage(angle.clone());
+        save_with_suffix(args, img_angle, "_angle");
 
         let img_anisotropy = converters::angle_and_strength_to_rgbimage(angle, strength);
 
