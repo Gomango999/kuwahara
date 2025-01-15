@@ -313,6 +313,29 @@ fn transform_point(point: &[f64; 2], transform: &Array2<f64>) -> [f64; 2] {
     result
 }
 
+/// Samples a continuous point from a discrete 2D image. We use a weighted
+/// combination of the 4 pixels surrounding the point.
+#[inline(always)]
+fn sample_point(x: f64, y: f64, img: &Array2<f64>) -> f64 {
+    let x1 = x.floor() as usize;
+    let x2 = x.ceil() as usize;
+    let y1 = y.floor() as usize;
+    let y2 = y.ceil() as usize;
+
+    let x_weight = x - x1 as f64;
+    let y_weight = y - y1 as f64;
+
+    let val1 = img[[x1, y1]];
+    let val2 = img[[x2, y1]];
+    let val3 = img[[x1, y2]];
+    let val4 = img[[x2, y2]];
+
+    val1 * (1.0 - x_weight) * (1.0 - y_weight)
+        + val2 * (x_weight) * (1.0 - y_weight)
+        + val3 * (1.0 - x_weight) * (y_weight)
+        + val4 * (x_weight) * (y_weight)
+}
+
 fn compute_pixel_statistics(
     x0: usize,
     y0: usize,
@@ -360,10 +383,10 @@ fn compute_pixel_statistics(
             }
 
             for i in 0..consts::NUM_SECTORS {
-                let weight = disc_weights[i][[
-                    disc_offset[0] as usize + consts::DISC_KERNEL_RADIUS,
-                    disc_offset[1] as usize + consts::DISC_KERNEL_RADIUS,
-                ]];
+                let sample_point_x = disc_offset[0] + consts::DISC_KERNEL_RADIUS as f64;
+                let sample_point_y = disc_offset[1] + consts::DISC_KERNEL_RADIUS as f64;
+
+                let weight = sample_point(sample_point_x, sample_point_y, &disc_weights[i]);
 
                 for c in 0..3 {
                     mean[[i, c]] += weight * img[[c, y1, x1]];
