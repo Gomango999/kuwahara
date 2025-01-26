@@ -63,47 +63,40 @@ pub fn run(args: &Args) -> ImageResult<()> {
     // `quadrant_cache[y][x]` represents the statistics of the (kernel_size * kernel_size)
     // window with top left corner (x,y). The window may fall off the image,
     // in which case only the intersecting pixels are used for calculation.
-    let mut quadrant_cache =
-        vec![
-            vec![QuadrantResult::default(); num_quadrant_cols];
-            num_quadrant_rows
-        ];
-    // TODO: Replace this with iterators
-    for y in -(args.kernel_size as i32)..(height as i32) {
-        for x in -(args.kernel_size as i32)..(width as i32) {
-            let vec_y: usize = (y + (args.kernel_size as i32)) as usize;
-            let vec_x: usize = (x + (args.kernel_size as i32)) as usize;
-            quadrant_cache[vec_y][vec_x] =
-                QuadrantResult::new(&img, (x, y), args.kernel_size);
-
-            pb.inc(1);
-        }
-    }
+    let quadrant_cache: Vec<Vec<_>> = (-(args.kernel_size as i32)..(height as i32))
+        .map(|y| {
+            (-(args.kernel_size as i32)..(width as i32))
+                .map(|x| {
+                    let quadrant_result = QuadrantResult::new(&img, (x, y), args.kernel_size);
+                    pb.inc(1);
+                    quadrant_result
+                })
+                .collect()
+        })
+        .collect();
 
     // For each pixel, compute the quadrant with the least variance in brightness
     // and use it's mean color.
-    let mut result = RgbImage::new(width, height);
-    for y in 0..height as usize {
-        for x in 0..width as usize {
-            let a = args.kernel_size as usize;
-            let quadrants = vec![
-                &quadrant_cache[y][x],
-                &quadrant_cache[y + a - 1][x],
-                &quadrant_cache[y][x + a - 1],
-                &quadrant_cache[y + a - 1][x + a - 1],
-            ];
+    let result = RgbImage::from_fn(width, height, |x, y| {
+        let x = x as usize;
+        let y = y as usize;
+        let a = args.kernel_size as usize;
+        let quadrants = vec![
+            &quadrant_cache[y][x],
+            &quadrant_cache[y + a - 1][x],
+            &quadrant_cache[y][x + a - 1],
+            &quadrant_cache[y + a - 1][x + a - 1],
+        ];
 
-            let min_quadrant = quadrants
-                .iter()
-                .min_by(|q1, q2| {
-                    q1.brightness_var.partial_cmp(&q2.brightness_var).unwrap()
-                })
-                .unwrap();
+        let min_quadrant = quadrants
+            .iter()
+            .min_by(|q1, q2| q1.brightness_var.partial_cmp(&q2.brightness_var).unwrap())
+            .unwrap();
 
-            result.put_pixel(x as u32, y as u32, min_quadrant.mean_color);
-            pb.inc(1);
-        }
-    }
+        pb.inc(1);
+
+        min_quadrant.mean_color
+    });
 
     let output = args.get_output();
     result.save(output)?;
@@ -121,11 +114,7 @@ struct Window {
     y_end: u32,
 }
 impl Window {
-    fn new(
-        (x, y): (i32, i32),
-        (width, height): (u32, u32),
-        kernel_size: u32,
-    ) -> Self {
+    fn new((x, y): (i32, i32), (width, height): (u32, u32), kernel_size: u32) -> Self {
         let x_start = max(0, x) as u32;
         let y_start = max(0, y) as u32;
         let x_end = min(x_start + kernel_size, width);
@@ -183,7 +172,6 @@ struct QuadrantMeans {
     color: Rgb<u8>,
 }
 impl QuadrantMeans {
-    // TODO: Replace with iterators?
     fn new(img: &RgbImage, window: &Window) -> Self {
         let mut color_sum = [0, 0, 0];
         let mut brightness_sum = 0;
@@ -200,6 +188,7 @@ impl QuadrantMeans {
                 }
             }
         }
+
         let num_pixels = window.num_pixels();
         let mean_color = Rgb::<u8>([
             (color_sum[0] as f32 / num_pixels as f32) as u8,
@@ -216,12 +205,7 @@ impl QuadrantMeans {
 }
 
 /// computes the variance in brightness for a window in an image
-fn compute_variance(
-    img: &RgbImage,
-    window: &Window,
-    mean_brightness: f32,
-) -> f32 {
-    // TODO: Replace with iterators?
+fn compute_variance(img: &RgbImage, window: &Window, mean_brightness: f32) -> f32 {
     let mut squared_diff_sum = 0.0;
     for y in window.y_start..window.y_end {
         for x in window.x_start..window.x_end {
